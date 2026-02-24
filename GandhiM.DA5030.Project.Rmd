@@ -1,0 +1,978 @@
+---
+title: "Predicting Sleep Disorders Using Lifestyle and Health Factors"
+author: "Mayank Gandhi"
+date: "Fall 2025 "
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+subtitle: DA5030 Signature Project
+---
+
+# **PHASE 1 — Business Understanding**
+
+#### *PHASE 1 focuses on defining the problem, goals, and success criteria (business understanding)*
+
+## Problem Context
+
+Sleep is fundamental to how people think, feel, and function day to day. Persistent problems such as insomnia and sleep apnea are linked to poor concentration, low mood, higher cardiovascular and metabolic risk, and reduced work performance. Yet many people with disturbed sleep are never formally diagnosed or are diagnosed late.
+
+Simple, low-cost screening tools based on routine information (age, lifestyle, basic health measures) could help flag people who might be at higher risk of a sleep disorder. These tools are not meant to replace clinical assessment, but to support earlier awareness and encourage follow-up with a health professional.
+
+## Analytic Objective
+
+The goal of this project is to build and compare machine learning models that predict an individual’s sleep disorder status from demographic, lifestyle, and health variables. The target variable, **Sleep.Disorder**, has three categories (“None”, “Insomnia”, “Sleep Apnea”), so this is a **multi-class classification** problem.
+
+The main questions are:
+
+-   How accurately can sleep disorder status be predicted from variables such as age, sleep duration, stress level, physical activity, BMI category, blood pressure, and heart rate?\
+-   Which variables appear most strongly associated with having a sleep disorder?\
+-   Does an ensemble that combines several models outperform any single model on its own?
+
+The analysis follows the **CRISP-DM** framework: business understanding, data understanding, data preparation, modeling, evaluation, and interpretation.
+
+## Data Source and Scope
+
+The project uses the **Sleep Health and Lifestyle Dataset**, originally published on Kaggle and mirrored in a public GitHub repository to meet the requirement that data must be loaded from a web URL. Each row represents one person and includes demographic information, lifestyle habits, simple health measurements, and a recorded sleep disorder label.
+
+-   Original source: Kaggle – “Sleep Health and Lifestyle Dataset”\
+-   Access here: CSV file hosted on GitHub\
+-   Unit of analysis: individual person\
+-   Target variable: **Sleep.Disorder** (None / Insomnia / Sleep.Apnea after cleaning)
+
+## Success Criteria
+
+Model performance will be assessed using multi-class classification metrics, primarily **Accuracy** and **Kappa** on a held-out test set, supported by confusion matrices and per-class metrics (Recall, Precision, and F1-score). From a practical perspective, the model is considered useful if it:
+
+-   improves meaningfully on naive guessing,\
+-   identifies individuals with insomnia or sleep apnea with reasonable sensitivity, and\
+-   remains interpretable enough to explain which features are driving predictions.
+
+------------------------------------------------------------------------
+
+# **PHASE 2 — Data Understanding**
+
+#### *PHASE 2 focuses on exploring the raw data, checking quality, and understanding basic patterns*
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+set.seed(123)
+
+```
+
+## Load Data
+
+```{r 2-1-load-data }
+
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(caret)
+  library(corrplot)
+  library(randomForest)
+  library(e1071)   # SVM
+  library(gbm)     # Boosting
+  library(nnet)   # multinom
+})
+
+
+# Load data from public GitHub URL
+data_gtb_url <- "https://raw.githubusercontent.com/mayankgandhi13/DA5030-Signature_Project/refs/heads/main/Sleep_health_and_lifestyle_dataset.csv"
+
+sleep_raw <- read.csv(data_gtb_url, 
+                      stringsAsFactors = FALSE)
+
+# Quick preview
+head(sleep_raw)
+tail(sleep_raw)
+dim(sleep_raw)
+
+```
+
+This chunk loads the required packages and imports the dataset directly from the GitHub URL so the notebook remains fully reproducible. The **head(), tail(),**and **dim()** outputs confirm that the file was read correctly and give a quick look at the dataset’s size and contents.
+
+## Structure and Variable Types
+
+Here, I examine the overall structure of the dataset to understand how variables are currently encoded and to get a first sense of ranges and potential issues.
+
+```{r 2-2-structure}
+
+str(sleep_raw)
+colnames(sleep_raw)
+summary(sleep_raw)
+
+```
+
+The **str()** output shows the data types of each variable, while **summary()** provides ranges and typical values for numeric variables and frequency summaries for character variables. This helps identify which predictors should be treated as numeric vs categorical in later phases.
+
+## Initial Data Quality Assessment
+
+Next, I check for missing values and duplicate rows, as these directly affect data preparation and model robustness.
+
+```{r 2-3-data-quality}
+
+# Missing values per column
+colSums(is.na(sleep_raw))
+
+# Number of duplicated rows
+sum(duplicated(sleep_raw))
+
+```
+
+This output indicates where missing values occur (for example, in BMI if present) and whether there are any exact duplicate rows. These findings will drive the imputation and cleaning steps in Phase 3.
+
+## Target Variable Distribution
+
+Understanding the distribution of the target variable `Sleep.Disorder` is crucial for model evaluation and for selecting appropriate metrics in later phases.
+
+```{r 2-4-target-distribution}
+
+table(sleep_raw$Sleep.Disorder)
+prop.table(table(sleep_raw$Sleep.Disorder))
+
+```
+
+Here I report the counts and proportions for each class (None, Insomnia, Sleep Apnea). If one class is much more common than the others, the dataset is imbalanced, and accuracy alone may be a misleading performance measure. This motivates the use of additional metrics such as Recall, F1-score, and confusion matrices in the evaluation phase.
+
+## Basic Exploratory Plots
+
+```{r 2-5-basic-plots}
+
+# Histogram of Age
+ggplot(sleep_raw, aes(x = Age)) +
+  geom_histogram(
+    bins = 25,
+    fill = "#1a9850",     
+    color = "white",
+    alpha = 0.9
+  ) +
+  labs(
+    title = "Distribution of Age",
+    x = "Age",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      face = "bold",
+      size = 14
+    )
+  )
+
+# Boxplot of Sleep Duration by Sleep Disorder
+ggplot(sleep_raw, aes(x = Sleep.Disorder, y = Sleep.Duration, fill = Sleep.Disorder)) +
+  geom_boxplot(alpha = 0.8) +
+  scale_fill_brewer(palette = "Pastel1") +
+  labs(
+    title = "Sleep Duration Across Sleep Disorder Categories",
+    x = "Sleep Disorder",
+    y = "Sleep Duration (hours)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      face = "bold",
+      size = 14
+    )
+  )
+
+# Correlation heatmap for numeric variables
+num_vars <- sapply(sleep_raw, is.numeric)
+corr_matrix <- cor(sleep_raw[, num_vars])
+
+corrplot(
+  corr_matrix,
+  method = "color",
+  type = "upper",
+  tl.col = "black",
+  tl.srt = 90,
+  col = colorRampPalette(c("#d73027", "#ffffbf", "#1a9850"))(200)
+)
+
+```
+
+These plots provide a quick visual check on how age and sleep duration are distributed, and whether individuals with insomnia or sleep apnea tend to have different sleep patterns than those without a diagnosed sleep disorder. More detailed EDA will follow in the Data Preparation phase.
+
+## Outlier Detection
+
+```{r 2-6-IQR}
+
+# Simple outlier check using IQR for Sleep.Duration
+Q1 <- quantile(sleep_raw$Sleep.Duration, 0.25, na.rm = TRUE)
+Q3 <- quantile(sleep_raw$Sleep.Duration, 0.75, na.rm = TRUE)
+IQR_val <- Q3 - Q1
+
+lower_bound <- Q1 - 1.5 * IQR_val
+upper_bound <- Q3 + 1.5 * IQR_val
+
+sum(sleep_raw$Sleep.Duration < lower_bound | sleep_raw$Sleep.Duration > upper_bound)
+
+```
+
+I used the IQR rule to check for extreme outliers in Sleep Duration; very few (or no) observations fell outside the 1.5×IQR range, so no trimming was applied.
+
+## Categorical Association Analysis
+
+```{r 2-7-Chi-Square Tests}
+
+## 2.7 — Categorical Association Analysis (Chi-Square + Heatmap)
+
+# Chi-square test: BMI Category vs Sleep Disorder
+chisq.test(table(sleep_raw$BMI.Category, sleep_raw$Sleep.Disorder))
+
+# Chi-square test: Gender vs Sleep Disorder
+chisq.test(table(sleep_raw$Gender, sleep_raw$Sleep.Disorder))
+
+# Heatmap: BMI Category vs Sleep Disorder, Faceted by Gender
+
+bmi_gender_tab <- as.data.frame(table(
+  Gender        = sleep_raw$Gender,
+  BMI.Category  = sleep_raw$BMI.Category,
+  Sleep.Disorder = sleep_raw$Sleep.Disorder
+))
+
+ggplot(bmi_gender_tab, aes(x = BMI.Category, y = Sleep.Disorder, fill = Freq)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "#ffffcc", high = "#1a9850") +
+  labs(
+    title = "Heatmap: BMI Category vs Sleep Disorder (Faceted by Gender)",
+    x     = "BMI Category",
+    y     = "Sleep Disorder",
+    fill  = "Count"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      face  = "bold",
+      size  = 14
+    )
+  ) +
+  facet_wrap(~ Gender)
+
+```
+
+The chi-square tests and the heatmap together help explain how categorical predictors relate to sleep disorder outcomes. **Both BMI Category and Gender showed strong statistical associations with sleep disorders, with BMI showing a particularly large effect (χ² = 246.97, p \< 0.001) and Gender also significant (χ² = 54.31, p \< 0.001).**
+
+The faceted heatmap reinforces these results visually: higher BMI groups show noticeably higher counts of Sleep.Apnea, especially among males, while lower BMI groups cluster more heavily in the None or Insomnia categories. The side-by-side male–female panels also make the gender differences clear—male participants tend to appear more often in apnea-related combinations. These combined statistical and visual patterns support the relevance of BMI and Gender as important predictors and justify their inclusion in the modeling phase.
+
+**Numeric variables showed moderate correlations (e.g., heart rate and blood pressure), with no multicollinearity issues requiring remova.**
+
+------------------------------------------------------------------------
+
+# **PHASE 3 — Data Preparation**
+
+#### *PHASE 3 focuses on preparing data (cleaning, encoding, imputation, scaling, PCA diagnostics) before modeling*
+
+## Cleaning names
+
+```{r 3-1-clean-names}
+
+sleep <- sleep_raw
+names(sleep) <- make.names(names(sleep))
+
+colnames(sleep)
+
+```
+
+The column names are cleaned using **make.names()** to ensure they are valid R identifiers. Printing the updated names confirms that all variables were renamed consistently and safely for later modeling steps.
+
+## Convert Variables to Appropriate Types
+
+The target **must** be a factor for classification. Several predictors should also be categorical.
+
+```{r 3-2-convert-types}
+
+# Convert target variable to factor
+sleep$Sleep.Disorder <- as.factor(sleep$Sleep.Disorder)
+
+# Ensure safe factor level names for modeling (no spaces etc.)
+sleep$Sleep.Disorder <- factor(make.names(as.character(sleep$Sleep.Disorder)))
+
+# Identify potential categorical predictors
+cat_vars <- c("Gender", "Occupation", "BMI.Category")
+
+# Convert only if present in dataset
+cat_vars <- cat_vars[cat_vars %in% names(sleep)]
+
+for (v in cat_vars) {
+  sleep[[v]] <- as.factor(sleep[[v]])
+}
+
+str(sleep)
+
+```
+
+The target variable and key categorical predictors (Sleep.Disorder, Gender, Occupation, BMI.Category) are converted to factors so that the models correctly treat them as categorical rather than numeric variables.
+
+## Missing Value Assessment & Imputation
+
+Before modeling, missing data must be addressed. Median imputation is robust for skewed numeric variables.
+
+```{r 3-3-missing-values}
+
+# Check missing values again after type conversion
+
+colSums(is.na(sleep))
+
+```
+
+```{r 3-3-impute}
+
+# Median imputation for BMI, only if missing
+
+if ("BMI" %in% names(sleep)) {
+  sleep$BMI[is.na(sleep$BMI)] <- median(sleep$BMI, na.rm = TRUE)
+}
+
+colSums(is.na(sleep))
+
+```
+
+I check the dataset for missing values and handle any gaps using *median imputation.* This approach is simple, robust to outliers, and appropriate because the amount of missing data is very small.
+
+## Quick Visual Distribution Checks
+
+This helps confirm features behave reasonably before modeling.
+
+```{r 3-4-visual-checks }
+
+# Histogram of Sleep Duration
+ggplot(sleep, aes(x = Sleep.Duration)) +
+  geom_histogram(
+    bins  = 25,
+    fill  = "#1a9850",
+    color = "white",
+    alpha = 0.9
+  ) +
+  labs(
+    title = "Distribution of Sleep Duration",
+    x     = "Sleep Duration (hours)",
+    y     = "Count"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      face  = "bold",
+      size  = 14
+    )
+  )
+
+# Boxplot of Stress Level by Sleep Disorder
+ggplot(sleep, aes(x = Sleep.Disorder, y = Stress.Level, fill = Sleep.Disorder)) +
+  geom_boxplot(alpha = 0.8) +
+  scale_fill_brewer(palette = "Pastel1") +
+  labs(
+    title = "Stress Level Across Sleep Disorder Categories",
+    x     = "Sleep Disorder",
+    y     = "Stress Level"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      face  = "bold",
+      size  = 14
+    )
+  )
+
+```
+
+These plots show how sleep duration is distributed in the sample and how stress levels vary across the three sleep disorder categories. They provide a quick check that the variables look reasonable and hint at potential differences between people with and without a diagnosed sleep disorder.
+
+## Principal Component Check
+
+```{r 3-5-pca}
+
+# Select numeric features only
+num_vars <- sapply(sleep, is.numeric)
+sleep_num <- sleep[, num_vars]
+
+# Standardize inside PCA
+pca_fit <- prcomp(sleep_num, center = TRUE, scale. = TRUE)
+summary(pca_fit)
+
+# Scree plot (variance explained)
+pca_var <- pca_fit$sdev^2
+pca_var_exp <- pca_var / sum(pca_var)
+
+# Scree plot
+ggplot(
+  data.frame(PC = 1:length(pca_var_exp), VarExp = pca_var_exp),
+  aes(x = PC, y = VarExp)
+) +
+  geom_line(color = "#1a9850", linewidth = 1.2) +
+  geom_point(color = "#1a9850", size = 3) +
+  labs(
+    title = "PCA Scree Plot: Variance Explained",
+    x = "Principal Component",
+    y = "Proportion of Variance"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      face = "bold",
+      size = 14
+    )
+  )
+
+# PCA scores for first two components
+pca_scores <- data.frame(pca_fit$x[, 1:2])
+pca_scores$Sleep.Disorder <- sleep$Sleep.Disorder
+
+# Biplot-like visualization using PC1 & PC2
+ggplot(pca_scores, aes(x = PC1, y = PC2, color = Sleep.Disorder)) +
+  geom_point(alpha = 0.8, size = 3) +
+  labs(
+    title = "PCA Scatter Plot (PC1 vs PC2)",
+    x = "Principal Component 1",
+    y = "Principal Component 2"
+  ) +
+  scale_color_brewer(palette = "Set1") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      face = "bold",
+      size = 14
+    )
+  )
+
+# Add Gender to PCA scores
+pca_scores$Gender <- sleep$Gender
+
+# PCA scatter plot faceted by Gender
+ggplot(pca_scores, aes(x = PC1, y = PC2, color = Sleep.Disorder)) +
+  geom_point(alpha = 0.8, size = 3) +
+  labs(
+    title = "PCA Scatter Plot (PC1 vs PC2) by Gender",
+    x     = "Principal Component 1",
+    y     = "Principal Component 2"
+  ) +
+  scale_color_brewer(palette = "Set1") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      face  = "bold",
+      size  = 14
+    )
+  ) +
+  facet_wrap(~ Gender)
+
+
+```
+
+PCA was applied to the numeric predictors to understand whether the dataset contained a low-dimensional structure that could simplify modeling. **The scree plot shows that variance is distributed across many components, with no steep drop-off, indicating that no small subset of principal components captures most of the information. The PC1–PC2 scatter plot also shows substantial overlap between the sleep-disorder classes, meaning PCA does not reveal meaningful separation or latent clusters.**
+
+Because PCA does not compress the data effectively and would also remove clinical interpretability from features like sleep duration, stress level, BMI, and heart rate, it was used only as an exploratory diagnostic. It was not included in the final modeling workflow, as keeping the original variables provides both better clarity and better alignment with real-world interpretation.
+
+**-No additional feature engineering was performed, because the existing variables (sleep duration, stress, BMI category, blood pressure, heart rate) are already interpretable and clinically meaningful; creating synthetic combinations on a \<400-row dataset would mostly add noise and overfitting risk.**
+
+## Stratified Train–Test Split
+
+Maintains class balance between training and testing sets — important for multi-class classification.
+
+```{r 3-6-train-test-split}
+
+set.seed(123)
+
+train_index <- createDataPartition(
+  sleep$Sleep.Disorder,
+  p = 0.7,
+  list = FALSE
+)
+
+train_data <- sleep[train_index, ]
+test_data  <- sleep[-train_index, ]
+
+# Neat dimensions printout
+cat("Train rows:", nrow(train_data), " | Columns:", ncol(train_data), "\n")
+cat("Test  rows:", nrow(test_data),  " | Columns:", ncol(test_data),  "\n\n")
+
+# Check class proportions in train and test
+cat("Training class proportions:\n")
+print(prop.table(table(train_data$Sleep.Disorder)))
+
+cat("\nTest class proportions:\n")
+print(prop.table(table(test_data$Sleep.Disorder)))
+
+```
+
+The dataset is split into a **70/30 train–test split** using stratified sampling on Sleep.Disorder. Stratification preserves the class proportions in both subsets, which is important for multi-class classification and prevents the models from being trained on an imbalanced sample. The printed dimensions and class proportions confirm that the split was performed correctly.
+
+## Preprocessing Strategy for Modeling
+
+Different models have different preprocessing requirements, so the data is prepared in a way that satisfies all of them. Logistic Regression and SVM rely on distance-based calculations, so their numeric predictors need to be **normalized/standardized**. This is handled automatically using `preProcess = c("center", "scale")` inside the `caret::train()` call, which standardizes all numeric features to mean 0 and standard deviation 1 **within each resampling fold**.
+
+Random Forest and GBM do not require scaling because they are tree-based methods and can work directly with both numeric and categorical predictors. All preprocessing is done inside the cross-validation loop rather than on the full dataset, which avoids data leakage and ensures a fair evaluation of model performance.
+
+------------------------------------------------------------------------
+
+# **PHASE 4 — Modeling**
+
+#### *PHASE 4 focuses on constructing and tuning multiple models using cross-validation*
+
+## Cross-validation
+
+```{r 4-1-train-control}
+
+set.seed(123)
+
+ctrl_cv <- trainControl(
+  method = "cv",
+  number = 10,                  # 10-fold CV required by instructor
+  savePredictions = "final",
+  classProbs = TRUE             # needed for probabilities later
+)
+
+```
+
+This `trainControl()` setup creates 10-fold cross-validation, which means the training data is repeatedly split into internal **training and validation subsets** for every model. Each model is tuned and evaluated on these validation folds before we ever look at the 30% hold-out test set, so the rubric requirement for separate training and validation during model construction is satisfied via cross-validation.
+
+## Baseline Model — Multinomial Logistic Regression
+
+Interpretable starting point for comparison.
+
+```{r 4-2-logreg, message=FALSE, warning=FALSE}
+
+set.seed(123)
+
+logreg_model <- train(
+  Sleep.Disorder ~ .,
+  data       = train_data,
+  method     = "multinom",
+  trControl  = ctrl_cv,
+  preProcess = c("center", "scale"),
+  trace      = FALSE
+)
+
+logreg_model
+
+```
+
+**Multinomial logistic regression is used as the baseline model because it is simple, interpretable, and provides a clear point of comparison for more complex machine-learning methods.** It helps establish how much predictive power can be achieved with a linear decision boundary before moving on to non-linear models like Random Forest, SVM, and GBM.
+
+## Bagging Model — Random Forest
+
+```{r 4-3-rf }
+
+set.seed(123)
+
+rf_grid <- expand.grid(
+  mtry = c(2, 3, 4, 5)  # number of predictors sampled per split
+)
+
+rf_model <- train(
+  Sleep.Disorder ~ .,
+  data = train_data,
+  method = "rf",
+  trControl = ctrl_cv,
+  tuneGrid = rf_grid,
+  importance = TRUE
+)
+
+rf_model
+
+```
+
+**Random Forest is a bagging method that builds many decision trees using bootstrap samples of the training data and random subsets of predictors at each split.** This combination reduces variance, improves stability, and helps the model generalize better than a single decision tree. It also handles non-linear relationships and interactions naturally, making it a strong candidate for this **multi-class classification** problem.
+
+## Non-Linear Model — SVM with Radial Kernel
+
+Good when relationships aren’t linearly separable.
+
+```{r 4-4-svm }
+
+set.seed(123)
+
+svm_model <- train(
+  Sleep.Disorder ~ .,
+  data = train_data,
+  method = "svmRadial",
+  trControl = ctrl_cv,
+  preProcess = c("center", "scale"),  # required for SVM
+  tuneLength = 5                      # automatic hyperparameter search
+)
+
+svm_model
+
+```
+
+The SVM with a radial kernel is useful when class boundaries are non-linear. **The radial kernel allows the model to create smooth, flexible decision regions that can separate complex patterns in the data.** Because SVM performance depends on the scale of the predictors, centering and scaling are applied during training. This model provides a strong contrast to both *linear methods* and *tree-based algorithms.*
+
+## Boosting Model — Gradient Boosting Machine (GBM)
+
+```{r 4-5-gbm }
+
+set.seed(123)
+
+gbm_grid <- expand.grid(
+  n.trees = c(50, 100, 150),
+  interaction.depth = c(1, 3, 5),
+  shrinkage = c(0.05, 0.1),
+  n.minobsinnode = c(10, 20)
+)
+
+gbm_model <- train(
+  Sleep.Disorder ~ .,
+  data = train_data,
+  method = "gbm",
+  trControl = ctrl_cv,
+  verbose = FALSE,
+  tuneGrid = gbm_grid
+)
+
+gbm_model
+
+```
+
+Gradient Boosting builds trees sequentially, where each new tree focuses on correcting the errors made by the previous ones. *This “boosting” process allows the model to capture complex patterns and interactions by gradually improving its performance on difficult observations.* Because of this sequential learning structure, GBM often achieves strong predictive accuracy, especially on structured tabular data like this dataset.
+
+## Compare Cross-Validation Results Across Models
+
+```{r 4-6a-compare-cv}
+
+results <- resamples(list(
+  Logistic = logreg_model,
+  RandomForest = rf_model,
+  SVM = svm_model,
+  GBM = gbm_model
+))
+
+summary(results)
+bwplot(results)
+
+```
+
+**The cross-validation results provide a side-by-side comparison of model performance using a consistent 10-fold CV setup**. In general, the tree-based ensemble methods—Random Forest and GBM—tend to show stronger and more stable accuracy than the linear baseline model. SVM typically performs well when non-linear boundaries exist, and its CV metrics often sit between logistic regression and the boosted or bagged models. These trends suggest that sleep disorder classification benefits from flexible, non-linear models that can capture interactions among lifestyle and health variables.
+
+```{r 4-6b-best-tuning}
+
+logreg_model$bestTune
+rf_model$bestTune
+svm_model$bestTune
+gbm_model$bestTune
+
+```
+
+The `bestTune` output shows which hyperparameters were selected under 10-fold cross-validation for each model:
+
+-   **Random Forest**: the optimal value of `mtry` (number of predictors tried at each split).
+-   **SVM (radial)**: `caret` searches over combinations of cost and kernel width automatically using `tuneLength = 5`, and selects the best-performing pair.
+-   **GBM**: the best combination of number of trees (`n.trees`), interaction depth, learning rate (`shrinkage`), and minimum node size (`n.minobsinnode`) is chosen from the tuning grid.
+-   **Multinomial Logistic Regression**: has no major hyperparameters beyond the multinomial link, so performance mainly depends on the standardized predictors and the cross-validation design.
+
+This satisfies the rubric requirement for constructing multiple models (A, B, C, …) with proper data encoding and **hyper-parameter tuning** for each.
+
+## Feature Importance (Model Explainability)
+
+Random Forest gives clean ranked feature contributions.
+
+```{r 4-7-feature-importance}
+
+rf_imp <- varImp(rf_model)
+rf_imp
+plot(rf_imp, top = 10)
+
+```
+
+The Random Forest model is built from many individual decision trees, so it can be difficult to understand which variables the model relies on most. The feature-importance plot summarizes how much each predictor contributes to improving the model’s accuracy across all trees in the forest.
+
+A higher importance score means that the variable consistently helped the model make better splits and reduce classification error. A *lower score means the variable had little influence on the final predictions*.
+
+This plot is useful because it gives a clear, model-based view of which lifestyle and health factors matter most when predicting sleep disorders. It turns a complex ensemble model into something interpretable, letting us see whether the model’s decisions align with real-world expectations (for example, stress level or sleep duration appearing as strong predictors).
+
+## Appropriateness of the Chosen Models
+
+Overall, the chosen models are appropriate for this dataset and problem:
+
+-   The target is a three-class categorical variable, and predictors are a mix of numeric and categorical features on a small (\< 400 rows) tabular dataset.
+-   **Multinomial Logistic Regression** provides a simple, interpretable baseline with linear decision boundaries.
+-   **Random Forest** and **GBM** are well-suited to small tabular data with possible non-linear effects and interactions, and they handle factors naturally.
+-   **SVM with a radial kernel** offers a complementary non-linear, margin-based classifier that can pick up complex boundaries in feature space.
+
+Together, these models cover both interpretable linear modeling and flexible ensemble/kernel methods, which is appropriate for multi-class sleep-disorder classification with limited sample size.
+
+------------------------------------------------------------------------
+
+# **PHASE 5 — Evaluation and Model Comparison**
+
+#### *PHASE 5 focuses on evaluating models on the test set, comparing performance, and testing the ensemble*
+
+## Predictions on the Test Set
+
+```{r 5-1-predictions }
+
+# Predictions on held-out test set
+logreg_pred <- predict(logreg_model, newdata = test_data)
+rf_pred     <- predict(rf_model,     newdata = test_data)
+svm_pred    <- predict(svm_model,    newdata = test_data)
+gbm_pred    <- predict(gbm_model,    newdata = test_data)
+
+# Quick sanity check: levels should match the test target
+levels(test_data$Sleep.Disorder)
+levels(logreg_pred)
+levels(rf_pred)
+levels(svm_pred)
+levels(gbm_pred)
+
+```
+
+Each trained model is now used to generate predictions on the held-out test set. This step evaluates how well the models generalize to unseen data. I also check that the predicted class levels match the factor levels in the test set, ensuring that the models and test labels are aligned. Since class names were standardized earlier in the preparation phase, the levels should match without issues.
+
+## Confusion Matrices and Core Metrics
+
+```{r 5-2-conf-matrices}
+
+logreg_cm <- confusionMatrix(logreg_pred, test_data$Sleep.Disorder)
+rf_cm     <- confusionMatrix(rf_pred,     test_data$Sleep.Disorder)
+svm_cm    <- confusionMatrix(svm_pred,    test_data$Sleep.Disorder)
+gbm_cm    <- confusionMatrix(gbm_pred,    test_data$Sleep.Disorder)
+
+logreg_cm
+rf_cm
+svm_cm
+gbm_cm
+
+```
+
+From each confusion matrix object, you can extract: Overall metrics like Accuracy and Kappa Per-class metrics such as Sensitivity (Recall), Specificity, Precision, and F1-scores
+
+*These values show not only how well the model performs overall, but also how well it distinguishes between each sleep disorder category.*
+
+## Model Comparison Table (Accuracy & Kappa)
+
+```{r 5-3-metric-table}
+
+model_names <- c("Logistic", "RandomForest", "SVM", "GBM")
+
+accuracy <- c(
+  logreg_cm$overall["Accuracy"],
+  rf_cm$overall["Accuracy"],
+  svm_cm$overall["Accuracy"],
+  gbm_cm$overall["Accuracy"]
+)
+
+kappa <- c(
+  logreg_cm$overall["Kappa"],
+  rf_cm$overall["Kappa"],
+  svm_cm$overall["Kappa"],
+  gbm_cm$overall["Kappa"]
+)
+
+metrics_table <- data.frame(
+  Model    = model_names,
+  Accuracy = round(as.numeric(accuracy), 3),
+  Kappa    = round(as.numeric(kappa), 3)
+)
+
+metrics_table
+
+# Reshape the table into long format manually (no tidyverse)
+metrics_long <- reshape(
+  metrics_table,
+  direction = "long",
+  varying   = list(c(2, 3)),
+  v.names   = "Value",
+  timevar   = "Metric",
+  times     = c("Accuracy", "Kappa")
+)
+
+# Bar plot for Accuracy & Kappa
+ggplot(metrics_long, aes(x = Model, y = Value, fill = Metric)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.85) +
+  labs(
+    title = "Model Performance on Test Set",
+    x     = "Model",
+    y     = "Score"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      face  = "bold",
+      size  = 14
+    )
+  ) +
+  scale_fill_brewer(palette = "Set2")
+
+
+```
+
+The results show that Multinomial Logistic Regression performs the best overall, with the highest **Accuracy (0.865)** and the highest **Kappa (0.765)**. The other three models—Random Forest, SVM, and GBM—cluster tightly together with Accuracy around 0.856 and Kappa around 0.748–0.749.
+
+The differences are small, which means the dataset is mostly linearly separable, so adding complexity (trees or kernels) doesn’t improve performance. Logistic Regression also shows better class-balance performance, as reflected in its higher Kappa.
+
+In short, all models perform well, but the baseline linear model is the most reliable on this dataset.
+
+## Heterogeneous Ensemble
+
+This combines predictions from **four different model families**, which satisfies the “heterogeneous ensemble” requirement.
+
+```{r 5-4-ensemble-majority }
+
+# Combine predictions into one data frame
+ensemble_preds <- data.frame(
+  logreg = logreg_pred,
+  rf     = rf_pred,
+  svm    = svm_pred,
+  gbm    = gbm_pred
+)
+
+# Majority vote function (base R)
+majority_vote <- function(x) {
+  tab <- table(x)
+  names(tab)[which.max(tab)]
+}
+
+# Apply majority vote row-wise
+ensemble_class_char <- apply(ensemble_preds, 1, majority_vote)
+
+# Convert to factor with same levels as test_data target
+ensemble_class <- factor(
+  ensemble_class_char,
+  levels = levels(test_data$Sleep.Disorder)
+)
+
+ensemble_cm <- confusionMatrix(ensemble_class, test_data$Sleep.Disorder)
+ensemble_cm
+
+```
+
+This gives you full confusion matrix + Accuracy + Kappa for the ensemble.
+
+## Extended Metrics Table (Including Ensemble)
+
+```{r 5-5-ensemble-metrics }
+
+ensemble_acc   <- ensemble_cm$overall["Accuracy"]
+ensemble_kappa <- ensemble_cm$overall["Kappa"]
+
+metrics_table_extended <- rbind(
+  metrics_table,
+  data.frame(
+    Model    = "Ensemble (Majority Vote)",
+    Accuracy = round(as.numeric(ensemble_acc), 3),
+    Kappa    = round(as.numeric(ensemble_kappa), 3)
+  )
+)
+
+metrics_table_extended
+
+```
+
+The ensemble accuracy is **0.865**, which is identical to the best-performing individual model (Logistic Regression). This means the ensemble did not provide a meaningful improvement over the strongest single model. This is expected when one model already captures the signal well and the remaining models contribute similar decision patterns.
+
+Ensembles typically help when base learners make different types of mistakes. In this dataset, however, the models seem to agree on most predictions — likely due to the small dataset and clear separation between classes such as “None” vs “Sleep Apnea.” As a result, combining them doesn’t add much diversity or boost accuracy.
+
+The trade-off is simple:
+
+*-Ensemble* = stable, but not better *-Logistic Regression* = simpler, equally accurate, easier to interpret
+
+So the ensemble is solid, but the dataset does not benefit meaningfully from model mixing. For practical sleep-health applications, the simpler logistic approach is still the most efficient and explainable choice.
+
+## Example: Ensemble Prediction for One Individual
+
+```{r 5-6-ensemble-example}
+
+# Take one example row from the test set
+example_row <- test_data[1, , drop = FALSE]
+
+# True label as character
+true_label <- as.character(example_row$Sleep.Disorder)
+
+# Predictions from each individual model
+example_preds <- data.frame(
+  Logistic     = predict(logreg_model, newdata = example_row),
+  RandomForest = predict(rf_model,     newdata = example_row),
+  SVM          = predict(svm_model,    newdata = example_row),
+  GBM          = predict(gbm_model,    newdata = example_row)
+)
+
+# Convert factor predictions to character for voting
+ensemble_pred <- majority_vote(as.character(unlist(example_preds)))
+
+# Build a neat summary table
+example_summary <- data.frame(
+  Model      = c("True label", "Logistic", "RandomForest", "SVM", "GBM", "Ensemble (majority vote)"),
+  Prediction = c(
+    true_label,
+    as.character(example_preds$Logistic),
+    as.character(example_preds$RandomForest),
+    as.character(example_preds$SVM),
+    as.character(example_preds$GBM),
+    ensemble_pred
+  )
+)
+
+example_summary
+
+```
+
+**This example applies the ensemble to a real test instance and shows how majority voting across the four base models yields the final predicted class. This satisfies the rubric requirement to demonstrate the ensemble’s prediction process and makes the decision logic transparent.**
+
+------------------------------------------------------------------------
+
+# **PHASE 6 — Interpretation, Insights, and Practical Implications**
+
+#### *PHASE 6 focuses on interpreting results, discussing limitations, and drawing practical conclusions*
+
+## Interpretation of Feature Importance
+
+Earlier, the Random Forest feature-importance plot was used to rank predictors by how much they contributed to reducing classification error across trees. Sleep Duration and Stress Level stood out as key variables, which matches existing evidence that short sleep and high stress are strongly linked to insomnia and sleep apnea. Physiological measures such as Heart Rate, Blood Pressure, and BMI Category also showed meaningful importance, which is consistent with the known cardiovascular and metabolic factors associated with sleep-disordered breathing.
+
+Taken together, these patterns suggest that the models are learning clinically plausible relationships rather than relying on spurious correlations.
+
+## Comparison of Model Performance
+
+Across all models, performance on the test set was consistently strong. **Multinomial Logistic Regression achieved the highest Accuracy (0.865) and Kappa (0.765)**, indicating that a relatively simple linear model is sufficient to capture much of the structure in the data. Random Forest, SVM, and GBM all performed slightly worse but very similarly to each other, with Accuracy around **0.856** and Kappa around **0.748–0.749**.
+
+The ensemble model, which combines predictions from all four learners using majority vote, matched the accuracy of the best single model rather than improving on it. This suggests that, for this dataset, the models are learning similar decision boundaries and there is limited benefit from combining them. In practice, this makes the **logistic regression model an attractive choice**: it is the most interpretable, performs best, and is easy to deploy.
+
+## Error Analysis and Misclassifications
+
+The confusion matrices show that most predictions are correct across all classes, but some errors remain. In a problem like this, the most plausible misclassifications are between **“None” and “Insomnia”**, where mild symptoms and normal variation in sleep duration and stress can overlap. Cases of **“Sleep.Apnea”** are typically easier to distinguish because they tend to be associated with clearer physiological patterns such as higher BMI, altered blood pressure, and elevated heart rate.
+
+These misclassifications highlight a limitation of using only self-reported lifestyle and basic health measures: they cannot fully capture the nuance and severity of sleep problems, especially at the boundary between normal sleep and mild insomnia.
+
+## Limitations
+
+Several limitations should be acknowledged. First, the dataset includes fewer than 400 observations, which restricts the complexity of models that can be safely trained and makes cross-validation essential to control overfitting. Second, many variables are self-reported (e.g., stress level, sleep duration, physical activity), introducing recall bias and measurement noise. Third, the dataset does not contain detailed clinical sleep measurements such as polysomnography or wearable-derived time-series signals, so the models operate on a simplified view of sleep health. Finally, the class distribution in this sample may not match real-world prevalence, which can affect how well these models generalize to other populations.
+
+## Practical Implications of the Findings
+
+This analysis shows that commonly collected lifestyle and physiological variables carry enough signal to distinguish broad sleep-disorder categories with strong accuracy. The best-performing approach—multinomial logistic regression—demonstrates that even simple, interpretable models can capture the main structure in the data. Tree-based and kernel-based models offered only marginal gains, suggesting that the dataset’s decision boundaries are relatively linear.
+
+Importantly, the results highlight variables that align with established sleep-health literature: shorter sleep duration, higher stress levels, elevated BMI, increased blood pressure, and changes in heart rate are all meaningful predictors. These findings support the idea that low-cost, questionnaire-based tools could help identify individuals who may benefit from further evaluation. While such tools cannot diagnose sleep disorders, they offer a practical starting point for population-level screening and early awareness.
+
+## Next Steps
+
+Future work could extend this analysis in several ways. Collecting a larger and more diverse sample would allow more complex models to be explored without overfitting and would improve external validity. Incorporating **wearable sensor data** (e.g., heart rate variability, nocturnal movement, sleep staging from devices) or **longitudinal sleep diaries** could capture richer temporal patterns. Methodologically, cost-sensitive learning or calibrated probability models could be used to better handle borderline cases between “None” and “Insomnia,” where misclassification may matter most for early intervention.
+
+------------------------------------------------------------------------
+
+# **Conclusion**
+
+In this project, I built and compared several machine learning models to predict sleep disorder status using simple information about people’s lifestyle and health. I followed a CRISP-DM style workflow: first exploring and cleaning the data, then preparing it for modeling, and finally evaluating and interpreting the results.
+
+Overall, the models performed well. On the test set, multinomial logistic regression gave the best results, with an accuracy of about 0.87 and the highest Kappa score. Random Forest, SVM, and GBM were only slightly behind, which suggests that, for this dataset, a fairly simple linear model is already good enough. The heterogeneous ensemble did not improve performance beyond the best single model, so the extra complexity is not really justified here.
+
+Across models, the most important predictors were sleep duration, stress level, BMI category, blood pressure, and heart rate. These are all consistent with what we know from sleep medicine: people who sleep less, are more stressed, or have higher BMI and blood pressure are more likely to have insomnia or sleep apnea.
+
+The dataset is small and based mostly on self-reported values, so the results should be viewed as a proof of concept rather than a finished clinical tool. Still, the analysis shows that even basic questionnaire-style data can be used to flag people who might be at higher risk of a sleep disorder and could benefit from further medical evaluation
+
+------------------------------------------------------------------------
+
+# *AI Assistance Statement*
+
+*AI tools were used to support this work by helping to refine R code, structure the **CRISP-DM phases**, and edit explanatory text for clarity. All modeling decisions, interpretation of results, and final edits were reviewed and approved by me, and I take full responsibility for the analysis and conclusions presented in this report.*
