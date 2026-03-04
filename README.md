@@ -1,4 +1,4 @@
-# DA5030 Signature Project
+# Signature Project
 
 This repository contains my DA5030 Signature Project analysis and report.
 
